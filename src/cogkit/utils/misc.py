@@ -70,9 +70,9 @@ def _check_image_to_video_params(
             generation_mode.value,
             GenerationMode.ImageToVideo,
         )
-    if image is None:
-        err_msg = f"Image input is required in the image2video pipeline. Please provide a regular image file (image_file = {image})."
-        raise ValueError(err_msg)
+    #if image is None:
+    #    err_msg = f"Image input is required in the image2video pipeline. Please provide a regular image file (image_file = {image})."
+    #    raise ValueError(err_msg)
 
 
 def guess_generation_mode(
