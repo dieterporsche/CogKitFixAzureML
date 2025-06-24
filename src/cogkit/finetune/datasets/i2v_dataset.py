@@ -113,28 +113,31 @@ class BaseI2VDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, Any]:
         cache_dir = self.data_root / ".cache"
 
-        ##### prompt
+        # ───────── PROMPT ────────────────────────────────────────────────
         prompt = self.data[index]["prompt"]
         prompt_embedding = get_prompt_embedding(self.encode_text, prompt, cache_dir)
 
-        ##### image
+        # ───────── CONDITIONING-IMAGE ───────────────────────────────────
         image_preprocessed = self.data[index]["image"]
-        image_original: Image.Image = image_preprocessed
-        _, image_preprocessed = self.preprocess(None, image_preprocessed, self.device)
-        image_preprocessed = self.image_transform(image_preprocessed)
-        image_preprocessed = image_preprocessed.to("cpu")
-        # shape of image: [C, H, W]
+        image_original: Image.Image = image_preprocessed  # für Logging/Validierung
+        _, image_preprocessed = self.preprocess(
+            video=None,
+            image=image_preprocessed,
+            device=self.device,
+        )
+        image_preprocessed = self.image_transform(image_preprocessed).to("cpu")
 
+        # ───────── VALIDIERUNGS-SPLIT ───────────────────────────────────
         if not self.using_train:
             return {
                 "image": image_original,
                 "image_preprocessed": image_preprocessed,
                 "prompt": prompt,
                 "prompt_embedding": prompt_embedding,
-                "filename": Path(self.data[index]['image'].filename).stem,
+                "filename": Path(self.data[index]["image"].filename).stem,
             }
 
-        ##### video
+        # ───────── TRAININGS-SPLIT ──────────────────────────────────────
         video = self.data[index]["video"]
         video_path = Path(video._hf_encoded["path"])
         train_resolution_str = "x".join(str(x) for x in self.trainer.uargs.train_resolution)
@@ -144,28 +147,21 @@ class BaseI2VDataset(Dataset):
         )
         video_latent_dir.mkdir(parents=True, exist_ok=True)
 
-        encoded_video_path = video_latent_dir / (video_path.stem + ".safetensors")
+        encoded_video_path = video_latent_dir / f"{video_path.stem}.safetensors"
 
         if encoded_video_path.exists():
             encoded_video = load_file(encoded_video_path)["encoded_video"]
             _logger.debug(f"Loaded encoded video from {encoded_video_path}")
         else:
+            # Frames laden, normalisieren und encodieren
             frames, _ = self.preprocess(video, None, self.device)
-            # Current shape of frames: [F, C, H, W]
             frames = self.video_transform(frames)
-            # Convert to [B, C, F, H, W]
-            frames = frames.unsqueeze(0)
-            frames = frames.permute(0, 2, 1, 3, 4).contiguous()
-            encoded_video = self.encode_video(frames)
-
-            # [1, C, F, H, W] -> [C, F, H, W]
-            encoded_video = encoded_video[0]
-            encoded_video = encoded_video.to("cpu")
+            # [F, C, H, W] → [1, C, F, H, W]
+            frames = frames.unsqueeze(0).permute(0, 2, 1, 3, 4).contiguous()
+            encoded_video = self.encode_video(frames)[0].to("cpu")
             save_file({"encoded_video": encoded_video}, encoded_video_path)
             _logger.info(f"Saved encoded video to {encoded_video_path}")
 
-        # shape of encoded_video: [C, F, H, W]
-        # shape of image: [C, H, W]
         return {
             "image": image_original,
             "image_preprocessed": image_preprocessed,
@@ -173,8 +169,9 @@ class BaseI2VDataset(Dataset):
             "prompt_embedding": prompt_embedding,
             "video": video,
             "encoded_video": encoded_video,
-            "filename": Path(self.data[index]['image'].filename).stem,
+            "filename": video_path.stem,   # ← wird von validate() als Basename benutzt
         }
+
 
     def preprocess(
         self,
