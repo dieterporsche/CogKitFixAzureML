@@ -111,52 +111,67 @@ class BaseI2VDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, index: int) -> Dict[str, Any]:
+        """
+        Liefert genau **einen** Datensatz (Image → Video) plus Prompt-Infos.
+        *Garantiert* setzt jeder Rückgabe-Dict einen Schlüssel ``"filename"``,
+        den der Trainer in validate() für den Dateistamm nutzt.
+        """
         cache_dir = self.data_root / ".cache"
 
-        # ────────────────── PROMPT ──────────────────────────────────────
+        # ────────── PROMPT & EMBEDDING ──────────────────────────────────
         prompt = self.data[index]["prompt"]
         prompt_embedding = get_prompt_embedding(
             self.encode_text, prompt, cache_dir
         )
 
-        # ────────────────── CONDITION-IMAGE ─────────────────────────────
+        # ────────── CONDITION-IMAGE (Original + vor­pro­zes­siert) ──────
         image_original: Image.Image = self.data[index]["image"]
-        _, img_tensor = self.preprocess(
+        _, image_tensor = self.preprocess(
             video=None,
             image=image_original,
             device=self.device,
         )
-        img_tensor = self.image_transform(img_tensor).to("cpu")
+        image_tensor = self.image_transform(image_tensor).to("cpu")
 
-        # ────────────── VALIDATION-/TEST-SPLIT (kein Video) ─────────────
+        # ────────────────────────────────────────────────────────────────
+        # 1) VALIDIERUNGS-/TEST-SPLIT  (kein Video vorhanden)
+        # ────────────────────────────────────────────────────────────────
         if not self.using_train:
-            # ① Dateistamm sicher ermitteln – auch falls .filename fehlt
+            # Manche PIL-Images besitzen .filename, manche nicht
             try:
-                stem = Path(image_original.filename).stem
+                stem = Path(image_original.filename).stem or None
             except AttributeError:
-                # Fallback: Der ImageFolder-Loader legt den Pfad auch als String ab
-                stem = Path(self.data[index]["path"]).stem
+                stem = None
+
+            # Fallback: nimm den tatsächlichen Dateipfad aus dem Verzeichnis
+            if stem is None:
+                # self.data_root zeigt bereits auf .../test
+                img_files = sorted(p for p in self.data_root.glob("*") if p.is_file())
+                # Dieselbe Sortierung nutzt auch HF-ImageFolder -> IDs stimmen
+                stem = img_files[index].stem
 
             return {
                 "image": image_original,
-                "image_preprocessed": img_tensor,
+                "image_preprocessed": image_tensor,
                 "prompt": prompt,
                 "prompt_embedding": prompt_embedding,
-                "filename": stem,          # ② <- WIRD VON validate() GENUTZT
+                "filename": stem,              #  ← WICHTIG!
             }
 
-        # ───────────── TRAINING-SPLIT (Video vorhanden) ────────────────
+        # ────────────────────────────────────────────────────────────────
+        # 2) TRAININGS-SPLIT (Video + Bild vorhanden)
+        # ────────────────────────────────────────────────────────────────
         video = self.data[index]["video"]
-        video_path = Path(video._hf_encoded["path"])
-        train_res_str = "x".join(map(str, self.trainer.uargs.train_resolution))
+        video_path = Path(video._hf_encoded["path"])  # absoluter Pfad
 
-        lat_dir = (
+        train_res_str = "x".join(map(str, self.trainer.uargs.train_resolution))
+        latent_dir = (
             cache_dir / "video_latent"
             / self.trainer.uargs.model_name
             / train_res_str
         )
-        lat_dir.mkdir(parents=True, exist_ok=True)
-        latent_file = lat_dir / f"{video_path.stem}.safetensors"
+        latent_dir.mkdir(parents=True, exist_ok=True)
+        latent_file = latent_dir / f"{video_path.stem}.safetensors"
 
         if latent_file.exists():
             encoded_video = load_file(latent_file)["encoded_video"]
@@ -171,14 +186,13 @@ class BaseI2VDataset(Dataset):
 
         return {
             "image": image_original,
-            "image_preprocessed": img_tensor,
+            "image_preprocessed": image_tensor,
             "prompt": prompt,
             "prompt_embedding": prompt_embedding,
             "video": video,
             "encoded_video": encoded_video,
-            "filename": video_path.stem,   # <- WIRD VON validate() GENUTZT
+            "filename": video_path.stem,       #  ← WICHTIG!
         }
-
 
 
     def preprocess(
