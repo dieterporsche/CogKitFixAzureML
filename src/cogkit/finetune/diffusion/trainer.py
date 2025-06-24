@@ -27,6 +27,16 @@ from .schemas import DiffusionArgs, DiffusionComponents, DiffusionState
 
 
 class DiffusionTrainer(BaseTrainer):
+    """Trainer‑Klasse mit stabilem Validation‑Logging.
+
+    Alle generierten Artefakte (PNG / MP4 / TXT) übernehmen den Dateistamm der
+    jeweiligen Eingabe. Falls kein Name im Batch vorhanden ist, wird weiterhin
+    auf ``process{rank}-batch{idx}`` zurückgegriffen.
+    """
+
+    # ------------------------------------------------------------------
+    #                    INITIALISIERUNG & BASIC SETUP
+    # ------------------------------------------------------------------
     @override
     def __init__(self, uargs_fpath: str | Path) -> None:
         super().__init__(uargs_fpath)
@@ -54,8 +64,11 @@ class DiffusionTrainer(BaseTrainer):
 
         self.state.transformer_config = self.components.transformer.config
 
+    # ------------------------------------------------------------------
+    #                           DATASET SETUP
+    # ------------------------------------------------------------------
     @override
-    def prepare_dataset(self) -> None:
+    def prepare_dataset(self) -> None:  # noqa: C901  (cyclomatic complexity)
         generation_mode = guess_generation_mode(self.components.pipeline_cls)
         match generation_mode:
             case GenerationMode.TextToImage:
@@ -89,40 +102,41 @@ class DiffusionTrainer(BaseTrainer):
             case _:
                 raise ValueError(f"Invalid generation mode: {generation_mode}")
 
-        additional_args = {
+        additional_args: dict[str, Any] = {
             "device": self.state.device,
             "trainer": self,
         }
 
+        # -------------------- Datasets --------------------
         self.train_dataset = dataset_cls(
-            **(self.uargs.model_dump()),
+            **self.uargs.model_dump(),
             **additional_args,
             using_train=True,
         )
         if self.uargs.do_validation:
             self.test_dataset = dataset_cls(
-                **(self.uargs.model_dump()),
+                **self.uargs.model_dump(),
                 **additional_args,
                 using_train=False,
             )
 
-        ### Prepare VAE and text encoder for encoding
+        # ---------------- Encode‑Prep --------------------
         self.components.vae.requires_grad_(False)
         self.components.text_encoder.requires_grad_(False)
         self.components.vae.to(self.state.device, dtype=self.state.weight_dtype)
-        if self.uargs.low_vram:  # offload text encoder to CPU
+        if self.uargs.low_vram:
             cpu_offload(self.components.text_encoder, self.state.device)
         else:
             self.components.text_encoder.to(self.state.device, dtype=self.state.weight_dtype)
 
-        ### Precompute embedding
+        # Vorberechnete Embeddings
         self.logger.info("Precomputing embedding ...")
         self.state.negative_prompt_embeds = self.get_negtive_prompt_embeds().to(self.state.device)
 
-        for dataset in [self.train_dataset, self.test_dataset]:
+        for dataset in (self.train_dataset, self.test_dataset):
             if dataset is None:
                 continue
-            tmp_data_loader = torch.utils.data.DataLoader(
+            tmp_loader = torch.utils.data.DataLoader(
                 dataset,
                 collate_fn=self.collate_fn,
                 batch_size=1,
@@ -135,8 +149,8 @@ class DiffusionTrainer(BaseTrainer):
                     shuffle=False,
                 ),
             )
-            for _ in tmp_data_loader:
-                ...
+            for _ in tmp_loader:
+                pass
 
         self.logger.info("Precomputing embedding ... Done")
         dist.barrier()
@@ -146,6 +160,7 @@ class DiffusionTrainer(BaseTrainer):
             self.components.text_encoder = self.components.text_encoder.to("cpu")
         free_memory()
 
+        # -------------------- DataLoader --------------------
         if not self.uargs.enable_packing:
             self.train_data_loader = torch.utils.data.DataLoader(
                 self.train_dataset,
@@ -161,7 +176,7 @@ class DiffusionTrainer(BaseTrainer):
                 ),
             )
         else:
-            length_list = [self.sample_to_length(sample) for sample in self.train_dataset]
+            length_list = [self.sample_to_length(s) for s in self.train_dataset]
             self.train_dataset = dataset_cls_packing(self.train_dataset)
             self.train_data_loader = torch.utils.data.DataLoader(
                 self.train_dataset,
@@ -193,57 +208,48 @@ class DiffusionTrainer(BaseTrainer):
                 ),
             )
 
+    # ------------------------------------------------------------------
+    #                              VALIDIERUNG
+    # ------------------------------------------------------------------
     @override
-    def validate(self, step: int, ckpt_path: str | None = None) -> None:
+    def validate(self, step: int, ckpt_path: str | None = None) -> None:  # noqa: C901
         self.logger.info("Starting validation")
-
-        num_validation_samples = len(self.test_data_loader)
-        if num_validation_samples == 0:
+        if len(self.test_data_loader) == 0:
             self.logger.warning("No validation samples found. Skipping validation.")
             return
 
-        # self.components.transformer.eval()
         torch.set_grad_enabled(False)
-
-        memory_statistics = get_memory_statistics(self.logger)
         self.logger.info(
-            f"Memory before validation start: {json.dumps(memory_statistics, indent=4)}"
+            "Memory before validation start: "
+            + json.dumps(get_memory_statistics(self.logger), indent=4)
         )
 
-        #####  Initialize pipeline  #####
         pipe = self.initialize_pipeline(ckpt_path=ckpt_path)
-
-        # if not using deepspeed, use model_cpu_offload to further reduce memory usage
-        # Or use pipe.enable_sequential_cpu_offload() to further reduce memory usage
         if self.uargs.low_vram:
             pipe.enable_sequential_cpu_offload(device=self.state.device)
         else:
             pipe.enable_model_cpu_offload(device=self.state.device)
-
-        # Convert all model weights to training dtype
-        # Note, this will change LoRA weights in self.components.transformer to training dtype, rather than keep them in fp32
         pipe = pipe.to(dtype=self.state.weight_dtype)
 
-        #################################
-
-        all_processes_artifacts = []
+        all_processes_artifacts: list[dict[str, Any]] = []
         for i, batch in enumerate(self.test_data_loader):
-            # only batch size = 1 is currently supported
-            prompt = batch.get("prompt", None)
-            prompt = prompt[0] if prompt else None
-            prompt_embedding = batch.get("prompt_embedding", None)
+            prompt = (batch.get("prompt") or [None])[0]
+            prompt_embedding = batch.get("prompt_embedding")
 
-            image = batch.get("image", None)
-            image = image[0] if image else None
-            encoded_image = batch.get("encoded_image", None)
+            image = (batch.get("image") or [None])[0]
+            encoded_image = batch.get("encoded_image")
 
-            video = batch.get("video", None)
-            video = video[0] if video else None
-            encoded_video = batch.get("encoded_video", None)
+            video = (batch.get("video") or [None])[0]
+            encoded_video = batch.get("encoded_video")
 
             self.logger.debug(
-                f"Validating sample {i + 1}/{num_validation_samples} on process {self.state.global_rank}. Prompt: {prompt}",
+                "Validating sample %d/%d on process %d. Prompt: %s",
+                i + 1,
+                len(self.test_data_loader),
+                self.state.global_rank,
+                prompt,
             )
+
             val_res = self.validation_step(
                 pipe=pipe,
                 eval_data={
@@ -256,135 +262,133 @@ class DiffusionTrainer(BaseTrainer):
                 },
             )
 
-            artifacts = {}
+            artifacts: dict[str, Any] = {}
             val_path = self.uargs.output_dir / "validation_res" / f"validation-{step}"
             mkdir(val_path)
 
-            # ----------- CHANGED -------------
-            # Prefer the original input filename (without extension) if provided by the dataset.
-            if "filename" in batch and batch["filename"]:
-                base_name = batch["filename"][0]
-            else:
+            # ------------------------- BASENAME -------------------------
+            name_keys = [
+                "filename",
+                "file_name",
+                "image_path",
+                "video_path",
+                "path",
+            ]
+            base_name: str | None = None
+            for key in name_keys:
+                raw_val = batch.get(key)
+                if not raw_val:
+                    continue
+
+                # Liste oder Tupel → erstes Element
+                if isinstance(raw_val, (list, tuple)):
+                    raw_val = raw_val[0] if raw_val else None
+                if raw_val is None:
+                    continue
+
+                # Tensor → in Python‑Objekt gießen
+                if torch.is_tensor(raw_val):
+                    try:
+                        raw_val = raw_val.item() if raw_val.ndim == 0 else raw_val.tolist()[0]
+                    except Exception:  # noqa: BLE001
+                        raw_val = str(raw_val)
+
+                raw_str = str(raw_val)
+                if raw_str:
+                    base_name = Path(raw_str).stem
+                    break
+
+            if not base_name:
                 base_name = f"process{self.state.global_rank}-batch{i}"
-            # ----------------------------------
+            # -----------------------------------------------------------
 
-            image = val_res.get("image", None)
-            video = val_res.get("video", None)
-
-            # Save prompt
-            with open(val_path / f"{base_name}.txt", "w") as f:
+            # ------------------------- SAVE ---------------------------
+            (val_path / "").mkdir(parents=True, exist_ok=True)
+            with open(val_path / f"{base_name}.txt", "w", encoding="utf-8") as f:
                 f.write(prompt or "")
 
-            # Save image output
-            if image:
-                fpath = val_path / f"{base_name}.png"
-                image.save(fpath)
-                artifacts["image"] = wandb.Image(str(fpath), caption=prompt)
+            img_res = val_res.get("image")
+            if img_res is not None:
+                img_path = val_path / f"{base_name}.png"
+                img_res.save(img_path)
+                artifacts["image"] = wandb.Image(str(img_path), caption=prompt)
 
-            # Save video output
-            if video:
-                fpath = val_path / f"{base_name}.mp4"
-                export_to_video(video, fpath, fps=self.uargs.gen_fps)
-                artifacts["video"] = wandb.Video(str(fpath), caption=prompt)
+            vid_res = val_res.get("video")
+            if vid_res is not None:
+                vid_path = val_path / f"{base_name}.mp4"
+                export_to_video(vid_res, vid_path, fps=self.uargs.gen_fps)
+                artifacts["video"] = wandb.Video(str(vid_path), caption=prompt)
 
             all_processes_artifacts.append(artifacts)
 
+        # --------------------- Logging & Cleanup ---------------------
         if self.tracker is not None:
-            all_artifacts = gather_object(all_processes_artifacts)
-            all_artifacts = [item for sublist in all_artifacts for item in sublist]
-            all_artifacts = expand_list(all_artifacts)
-            self.tracker.log({"validation": all_artifacts}, step=step)
+            gathered = gather_object(all_processes_artifacts)
+            flat = [item for sublist in gathered for item in sublist]
+            self.tracker.log({"validation": expand_list(flat)}, step=step)
 
-        # =============  Clean up  =============
         pipe.remove_all_hooks()
         del pipe
-        # Load models except those not needed for training
         self.move_components_to_device(
             dtype=self.state.weight_dtype,
             device=self.state.device,
             ignore_list=self.UNLOAD_LIST,
         )
-        # self.components.transformer.to(self.state.device, dtype=self.state.weight_dtype)
-
         free_memory()
         dist.barrier()
-        # =======================================
 
-        memory_statistics = get_memory_statistics(self.logger)
-        self.logger.info(f"Memory after validation end: {json.dumps(memory_statistics, indent=4)}")
+        self.logger.info(
+            "Memory after validation end: "
+            + json.dumps(get_memory_statistics(self.logger), indent=4)
+        )
         torch.cuda.reset_peak_memory_stats(self.state.device)
-
         torch.set_grad_enabled(True)
         self.components.transformer.train()
 
+    # ------------------------------------------------------------------
+    #                       ABSTRACT / OVERRIDE METHODS
+    # ------------------------------------------------------------------
     @override
-    def load_components(self) -> DiffusionComponents:
+    def load_components(self) -> DiffusionComponents:  # noqa: D401
         raise NotImplementedError
 
     @override
-    def compute_loss(self, batch: dict[str, Any]) -> torch.Tensor:
+    def compute_loss(self, batch: dict[str, Any]) -> torch.Tensor:  # noqa: D401
         raise NotImplementedError
 
-    def collate_fn(self, samples: list[dict[str, Any]]):
+    def collate_fn(self, samples: list[dict[str, Any]]):  # noqa: D401, ANN001
+        """Standard‑Collate‑Fn (Training & Validation).
+
+        Das Dataset sollte pro Sample einen Schlüssel ``filename`` (oder einen
+        der oben abgefangenen) bereitstellen, der den ursprünglichen
+        Dateinamen ohne Erweiterung enthält. Dieser wird als Basename für alle
+        Validation‑Artefakte genutzt.
         """
-        Note: This collate_fn function are used for both training and validation.
-        The dataset should include a ``filename`` field (stem of the original file path)
-        so it can be forwarded to the validation step above.
-        """
         raise NotImplementedError
 
-    def initialize_pipeline(self, ckpt_path: str | None = None) -> DiffusionPipeline:
+    def initialize_pipeline(self, ckpt_path: str | None = None) -> DiffusionPipeline:  # noqa: D401
         raise NotImplementedError
 
-    def encode_text(self, text: str) -> torch.Tensor:
-        # shape of output text: [sequence length, embedding dimension]
+    def encode_text(self, text: str) -> torch.Tensor:  # noqa: D401
         raise NotImplementedError
 
-    def get_negtive_prompt_embeds(self) -> torch.Tensor:
-        # shape of output text: [sequence length, embedding dimension]
+    def get_negtive_prompt_embeds(self) -> torch.Tensor:  # noqa: D401
         raise NotImplementedError
 
-    def encode_image(self, image: torch.Tensor) -> torch.Tensor:
-        # shape of input image: [B, C, H, W], where B = 1
-        # shape of output image: [B, C', H', W'], where B = 1
+    def encode_image(self, image: torch.Tensor) -> torch.Tensor:  # noqa: D401
         raise NotImplementedError
 
-    def encode_video(self, video: torch.Tensor) -> torch.Tensor:
-        # shape of input video: [B, C, F, H, W], where B = 1
-        # shape of output video: [B, C', F', H', W'], where B = 1
+    def encode_video(self, video: torch.Tensor) -> torch.Tensor:  # noqa: D401
         raise NotImplementedError
 
     def validation_step(
         self, pipe: DiffusionPipeline, eval_data: dict[str, Any]
     ) -> dict[str, str | Image.Image | list[Image.Image]]:
-        """
-        Perform a validation step using the provided pipeline and evaluation data.
-
-        Args:
-            pipe: The diffusion pipeline instance used for validation.
-            eval_data: A dictionary containing data for validation, may include:
-                - "prompt": Text prompt for generation (str).
-                - "prompt_embedding": Pre-computed text embeddings.
-                - "image": Input image for image-to-image tasks.
-                - "encoded_image": Pre-computed image embeddings.
-                - "video": Input video for video tasks.
-                - "encoded_video": Pre-computed video embeddings.
-
-        Returns:
-            A dictionary containing generated artifacts with keys:
-                - "text": Text data (str).
-                - "image": Generated image (PIL.Image.Image).
-                - "video": Generated video (list[PIL.Image.Image]).
-        """
         raise NotImplementedError
 
-    # ==========  Packing related functions  ==========
+    # ---------------- PACKING ----------------
     def sample_to_length(self, sample: dict[str, Any]) -> int:
-        """Map sample to length for packing sampler"""
         raise NotImplementedError
 
     def collate_fn_packing(self, samples: list[dict[str, list[Any]]]) -> dict[str, Any]:
-        """Collate function for packing sampler"""
         raise NotImplementedError
-
-    # =================================================
