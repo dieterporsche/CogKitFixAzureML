@@ -131,6 +131,7 @@ class BaseI2VDataset(Dataset):
                 "image_preprocessed": image_preprocessed,
                 "prompt": prompt,
                 "prompt_embedding": prompt_embedding,
+                "filename": Path(self.data[index]['image'].filename).stem,
             }
 
         ##### video
@@ -172,6 +173,7 @@ class BaseI2VDataset(Dataset):
             "prompt_embedding": prompt_embedding,
             "video": video,
             "encoded_video": encoded_video,
+            "filename": Path(self.data[index]['image'].filename).stem,
         }
 
     def preprocess(
