@@ -259,20 +259,33 @@ class DiffusionTrainer(BaseTrainer):
             artifacts = {}
             val_path = self.uargs.output_dir / "validation_res" / f"validation-{step}"
             mkdir(val_path)
-            filename = f"artifact-process{self.state.global_rank}-batch{i}"
+
+            # ----------- CHANGED -------------
+            # Prefer the original input filename (without extension) if provided by the dataset.
+            if "filename" in batch and batch["filename"]:
+                base_name = batch["filename"][0]
+            else:
+                base_name = f"process{self.state.global_rank}-batch{i}"
+            # ----------------------------------
 
             image = val_res.get("image", None)
             video = val_res.get("video", None)
-            with open(val_path / f"{filename}.txt", "w") as f:
-                f.write(prompt)
+
+            # Save prompt
+            with open(val_path / f"{base_name}.txt", "w") as f:
+                f.write(prompt or "")
+
+            # Save image output
             if image:
-                fpath = str(val_path / f"{filename}.png")
+                fpath = val_path / f"{base_name}.png"
                 image.save(fpath)
-                artifacts["image"] = wandb.Image(fpath, caption=prompt)
+                artifacts["image"] = wandb.Image(str(fpath), caption=prompt)
+
+            # Save video output
             if video:
-                fpath = str(val_path / f"{filename}.mp4")
+                fpath = val_path / f"{base_name}.mp4"
                 export_to_video(video, fpath, fps=self.uargs.gen_fps)
-                artifacts["video"] = wandb.Video(fpath, caption=prompt)
+                artifacts["video"] = wandb.Video(str(fpath), caption=prompt)
 
             all_processes_artifacts.append(artifacts)
 
@@ -292,9 +305,6 @@ class DiffusionTrainer(BaseTrainer):
             ignore_list=self.UNLOAD_LIST,
         )
         # self.components.transformer.to(self.state.device, dtype=self.state.weight_dtype)
-
-        # Change trainable weights back to fp32 to keep with dtype after prepare the model
-        # cast_training_params([self.components.transformer], dtype=torch.float32)
 
         free_memory()
         dist.barrier()
@@ -318,6 +328,8 @@ class DiffusionTrainer(BaseTrainer):
     def collate_fn(self, samples: list[dict[str, Any]]):
         """
         Note: This collate_fn function are used for both training and validation.
+        The dataset should include a ``filename`` field (stem of the original file path)
+        so it can be forwarded to the validation step above.
         """
         raise NotImplementedError
 
