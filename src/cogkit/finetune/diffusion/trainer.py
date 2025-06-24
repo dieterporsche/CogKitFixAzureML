@@ -243,7 +243,7 @@ class DiffusionTrainer(BaseTrainer):
             encoded_video = batch.get("encoded_video")
 
             self.logger.debug(
-                "Validating sample %d/%d on processs %d. Prompt: %s",
+                "Validating sample %d/%d on processed %d. Prompt: %s",
                 i + 1,
                 len(self.test_data_loader),
                 self.state.global_rank,
@@ -299,7 +299,7 @@ class DiffusionTrainer(BaseTrainer):
                     break
 
             if not base_name:
-                base_name = f"processs{self.state.global_rank}-batch{i}"
+                base_name = f"processed{self.state.global_rank}-batch{i}"
             # -----------------------------------------------------------
 
             # ------------------------- SAVE ---------------------------
