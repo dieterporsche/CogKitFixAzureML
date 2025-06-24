@@ -2,7 +2,7 @@
 
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Tuple
+from typing import TYPE_CHECKING, Any, Tuple, Dict
 
 import torch
 from datasets import load_dataset
@@ -110,67 +110,75 @@ class BaseI2VDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data)
 
-    def __getitem__(self, index: int) -> dict[str, Any]:
+    def __getitem__(self, index: int) -> Dict[str, Any]:
         cache_dir = self.data_root / ".cache"
 
-        # ───────── PROMPT ────────────────────────────────────────────────
+        # ────────────────── PROMPT ──────────────────────────────────────
         prompt = self.data[index]["prompt"]
-        prompt_embedding = get_prompt_embedding(self.encode_text, prompt, cache_dir)
+        prompt_embedding = get_prompt_embedding(
+            self.encode_text, prompt, cache_dir
+        )
 
-        # ───────── CONDITIONING-IMAGE ───────────────────────────────────
-        image_preprocessed = self.data[index]["image"]
-        image_original: Image.Image = image_preprocessed  # für Logging/Validierung
-        _, image_preprocessed = self.preprocess(
+        # ────────────────── CONDITION-IMAGE ─────────────────────────────
+        image_original: Image.Image = self.data[index]["image"]
+        _, img_tensor = self.preprocess(
             video=None,
-            image=image_preprocessed,
+            image=image_original,
             device=self.device,
         )
-        image_preprocessed = self.image_transform(image_preprocessed).to("cpu")
+        img_tensor = self.image_transform(img_tensor).to("cpu")
 
-        # ───────── VALIDIERUNGS-SPLIT ───────────────────────────────────
+        # ────────────── VALIDATION-/TEST-SPLIT (kein Video) ─────────────
         if not self.using_train:
+            # ① Dateistamm sicher ermitteln – auch falls .filename fehlt
+            try:
+                stem = Path(image_original.filename).stem
+            except AttributeError:
+                # Fallback: Der ImageFolder-Loader legt den Pfad auch als String ab
+                stem = Path(self.data[index]["path"]).stem
+
             return {
                 "image": image_original,
-                "image_preprocessed": image_preprocessed,
+                "image_preprocessed": img_tensor,
                 "prompt": prompt,
                 "prompt_embedding": prompt_embedding,
-                "filename": Path(self.data[index]["image"].filename).stem,
+                "filename": stem,          # ② <- WIRD VON validate() GENUTZT
             }
 
-        # ───────── TRAININGS-SPLIT ──────────────────────────────────────
+        # ───────────── TRAINING-SPLIT (Video vorhanden) ────────────────
         video = self.data[index]["video"]
         video_path = Path(video._hf_encoded["path"])
-        train_resolution_str = "x".join(str(x) for x in self.trainer.uargs.train_resolution)
+        train_res_str = "x".join(map(str, self.trainer.uargs.train_resolution))
 
-        video_latent_dir = (
-            cache_dir / "video_latent" / self.trainer.uargs.model_name / train_resolution_str
+        lat_dir = (
+            cache_dir / "video_latent"
+            / self.trainer.uargs.model_name
+            / train_res_str
         )
-        video_latent_dir.mkdir(parents=True, exist_ok=True)
+        lat_dir.mkdir(parents=True, exist_ok=True)
+        latent_file = lat_dir / f"{video_path.stem}.safetensors"
 
-        encoded_video_path = video_latent_dir / f"{video_path.stem}.safetensors"
-
-        if encoded_video_path.exists():
-            encoded_video = load_file(encoded_video_path)["encoded_video"]
-            _logger.debug(f"Loaded encoded video from {encoded_video_path}")
+        if latent_file.exists():
+            encoded_video = load_file(latent_file)["encoded_video"]
+            _logger.debug("Loaded encoded video from %s", latent_file)
         else:
-            # Frames laden, normalisieren und encodieren
             frames, _ = self.preprocess(video, None, self.device)
             frames = self.video_transform(frames)
-            # [F, C, H, W] → [1, C, F, H, W]
             frames = frames.unsqueeze(0).permute(0, 2, 1, 3, 4).contiguous()
             encoded_video = self.encode_video(frames)[0].to("cpu")
-            save_file({"encoded_video": encoded_video}, encoded_video_path)
-            _logger.info(f"Saved encoded video to {encoded_video_path}")
+            save_file({"encoded_video": encoded_video}, latent_file)
+            _logger.info("Saved encoded video to %s", latent_file)
 
         return {
             "image": image_original,
-            "image_preprocessed": image_preprocessed,
+            "image_preprocessed": img_tensor,
             "prompt": prompt,
             "prompt_embedding": prompt_embedding,
             "video": video,
             "encoded_video": encoded_video,
-            "filename": video_path.stem,   # ← wird von validate() als Basename benutzt
+            "filename": video_path.stem,   # <- WIRD VON validate() GENUTZT
         }
+
 
 
     def preprocess(
