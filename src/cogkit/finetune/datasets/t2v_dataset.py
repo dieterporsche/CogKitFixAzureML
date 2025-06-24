@@ -68,10 +68,18 @@ class BaseT2VDataset(Dataset):
         prompt_embedding = get_prompt_embedding(self.encode_text, prompt, cache_dir)
 
         if not self.using_train:
-            return {
+            result = {
                 "prompt": prompt,
                 "prompt_embedding": prompt_embedding,
             }
+            file_val = (
+                self.data[index].get("filename")
+                or self.data[index].get("file_name")
+                or self.data[index].get("path")
+            )
+            if file_val:
+                result["filename"] = Path(str(file_val)).stem
+            return result
 
         ##### video
         video = self.data[index]["video"]
