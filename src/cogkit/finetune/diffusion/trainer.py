@@ -243,7 +243,7 @@ class DiffusionTrainer(BaseTrainer):
             encoded_video = batch.get("encoded_video")
 
             self.logger.debug(
-                "Validating sample %d/%d on process %d. Prompt: %s",
+                "Validating sample %d/%d on processs %d. Prompt: %s",
                 i + 1,
                 len(self.test_data_loader),
                 self.state.global_rank,
@@ -299,7 +299,7 @@ class DiffusionTrainer(BaseTrainer):
                     break
 
             if not base_name:
-                base_name = f"process{self.state.global_rank}-batch{i}"
+                base_name = f"processs{self.state.global_rank}-batch{i}"
             # -----------------------------------------------------------
 
             # ------------------------- SAVE ---------------------------
@@ -359,12 +359,31 @@ class DiffusionTrainer(BaseTrainer):
     def collate_fn(self, samples: list[dict[str, Any]]):  # noqa: D401, ANN001
         """Standard‑Collate‑Fn (Training & Validation).
 
-        Das Dataset sollte pro Sample einen Schlüssel ``filename`` (oder einen
-        der oben abgefangenen) bereitstellen, der den ursprünglichen
-        Dateinamen ohne Erweiterung enthält. Dieser wird als Basename für alle
-        Validation‑Artefakte genutzt.
+        *  Für numerische / Tensor‑Werte verwenden wir `torch.utils.data.default_collate`.
+        *  Nicht‑Tensor‑Werte (Strings, PIL‑Images, ``None`` usw.) werden zu
+           Listen zusammengelegt.
+        *  Das Feld ``filename`` (falls vorhanden) wird **immer** als Liste
+           weitergereicht, damit der Validation‑Code es aus
+           ``batch["filename"][0]`` auslesen kann.
         """
-        raise NotImplementedError
+        from torch.utils.data._utils.collate import default_collate
+
+        # Numerische / Tensor‑Spalten herausfiltern, Rest separat sammeln
+        tensor_keys   = {}
+        non_tensor    = {}
+        for key in samples[0].keys():
+            first_val = samples[0][key]
+            if torch.is_tensor(first_val):
+                tensor_keys[key] = [s[key] for s in samples]
+            else:
+                non_tensor[key]  = [s[key] for s in samples]
+
+        # Standard‑Collate auf Tensor‑Spalten anwenden
+        batch = {k: default_collate(v) for k, v in tensor_keys.items()}
+
+        # Nicht‑Tensor‑Spalten anhängen (Listen beibehalten)
+        batch.update(non_tensor)
+        return batch
 
     def initialize_pipeline(self, ckpt_path: str | None = None) -> DiffusionPipeline:  # noqa: D401
         raise NotImplementedError
@@ -391,4 +410,20 @@ class DiffusionTrainer(BaseTrainer):
         raise NotImplementedError
 
     def collate_fn_packing(self, samples: list[dict[str, list[Any]]]) -> dict[str, Any]:
-        raise NotImplementedError
+        """Collate‑Fn für Packing‑Sampler.
+
+        Wie oben, nur dass hier jede Spalte bereits **Listen von Sub‑Samples**
+        enthält. Wir müssen deshalb **eine Ebene tiefer** collaten.
+        """
+        from torch.utils.data._utils.collate import default_collate
+
+        out: dict[str, Any] = {}
+        for key in samples[0].keys():
+            # Jedes samples[i][key] ist selbst eine Liste[SubSample]
+            merged = sum([s[key] for s in samples], [])  # flat
+
+            if torch.is_tensor(merged[0]):
+                out[key] = default_collate(merged)  # Tensor collate
+            else:
+                out[key] = merged                    # Liste beibehalten
+        return out
