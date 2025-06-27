@@ -193,7 +193,18 @@ class BaseArgs(BaseModel):
                         break
             if repo_root is None:
                 repo_root = cwd
+            # Find the repository root based on the current working directory.
+            # ``pyproject.toml`` exists in the repo root, so walk parents until
+            # it is found.  This works even when the package is installed in a
+            # Python environment.
+            cwd = Path.cwd().resolve()
+            repo_root = cwd
+            for parent in [cwd, *cwd.parents]:
+                if (parent / "pyproject.toml").exists():
+                    repo_root = parent
+                    break
 
+            
             yaml_dict["output_dir"] = repo_root / f"Output1__LR_{lr}__BS_{bs}"
 
         return cls(**yaml_dict)
