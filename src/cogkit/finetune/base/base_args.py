@@ -179,23 +179,27 @@ class BaseArgs(BaseModel):
             # ``pyproject.toml``.  If not found, fall back to the current
             # directory.
             # --------------------------------------------------------------
-            repo_root = next(
+           repo_root = next(
                 (p for p in [cwd, *cwd.parents] if (p / "pyproject.toml").exists()),
                 cwd,
             )
 
+            # Use a dedicated ``output`` directory under the repo root
+            output_root = repo_root / "output"
+            output_root.mkdir(exist_ok=True)
+
             # --------------------------------------------------------------
             # Determine the next available output folder index by inspecting
-            # existing ``Output*`` directories in the repo root.
+            # existing ``Output*`` directories in the ``output`` folder.
             # --------------------------------------------------------------
             indices = []
-            for d in repo_root.iterdir():
+            for d in output_root.iterdir():
                 if d.is_dir() and d.name.startswith("Output"):
                     num = d.name[6:].split("__", 1)[0]
                     if num.isdigit():
                         indices.append(int(num))
             next_idx = max(indices, default=0) + 1
 
-            yaml_dict["output_dir"] = repo_root / f"Output{next_idx}__LR_{lr}__BS_{bs}"
+            yaml_dict["output_dir"] = output_root / f"Output{next_idx}__LR_{lr}__BS_{bs}"
 
         return cls(**yaml_dict)
