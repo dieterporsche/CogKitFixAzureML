@@ -351,6 +351,21 @@ class BaseTrainer(ABC):
                 f"Memory after epoch {epoch + 1}: {json.dumps(memory_statistics, indent=4)}"
             )
 
+            # --------------------------------------------------------------
+            # At the end of every epoch save a checkpoint and run validation
+            # --------------------------------------------------------------
+            ckpt_path = self.maybe_save_checkpoint(global_step, must_save=True)
+            if ckpt_path is not None:
+                epoch_ckpt = self.uargs.output_dir / f"Checkpoint_Epoch_{epoch + 1}"
+                if is_main_process():
+                    Path(ckpt_path).rename(epoch_ckpt)
+            else:
+                epoch_ckpt = None
+
+            if self.uargs.do_validation:
+                free_memory()
+                self.validate(epoch + 1, ckpt_path=epoch_ckpt)
+
     def train_step(self, batch: dict[str, Any], sync_grad: bool) -> dict[str, Any]:
         logs = {}
 

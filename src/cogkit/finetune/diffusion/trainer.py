@@ -263,7 +263,7 @@ class DiffusionTrainer(BaseTrainer):
             )
 
             artifacts: dict[str, Any] = {}
-            val_path = self.uargs.output_dir / "validation_res" / f"validation-{step}"
+            val_path = self.uargs.output_dir / f"validation_Epoch_{step}"
             mkdir(val_path)
 
             # ------------------------- BASENAME -------------------------
