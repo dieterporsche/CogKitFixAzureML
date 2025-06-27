@@ -167,4 +167,16 @@ class BaseArgs(BaseModel):
         with open(fpath, "r") as f:
             yaml_dict = yaml.safe_load(f)
 
+        # ------------------------------------------------------------------
+        # Dynamically set the ``output_dir`` based on learning rate and
+        # batch size.  The folder will be created directly under the
+        # repository root with the name:
+        #   ``Output1__LR_<learning_rate>__BS_<batch_size>``
+        # ------------------------------------------------------------------
+        lr = yaml_dict.get("learning_rate")
+        bs = yaml_dict.get("batch_size")
+        if lr is not None and bs is not None:
+            repo_root = Path(__file__).resolve().parents[4]
+            yaml_dict["output_dir"] = repo_root / f"Output1__LR_{lr}__BS_{bs}"
+
         return cls(**yaml_dict)
