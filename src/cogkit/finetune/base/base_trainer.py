@@ -342,7 +342,12 @@ class BaseTrainer(ABC):
                     if self.tracker is not None:
                         self.tracker.log(logs, step=global_step)
 
-                    if self.uargs.do_validation and global_step % self.uargs.validation_steps == 0:
+                    if (
+                        self.uargs.do_validation
+                        and self.uargs.validation_steps
+                        and self.uargs.validation_steps > 0
+                        and global_step % self.uargs.validation_steps == 0
+                    ):
                         free_memory()
                         self.validate(global_step, ckpt_path=ckpt_path)
 
@@ -359,7 +364,6 @@ class BaseTrainer(ABC):
 
     def on_epoch_end(self, epoch: int, global_step: int) -> None:
         """Hook called at the end of each training epoch."""
-        return None
         # --------------------------------------------------------------
         # At the end of every epoch save a checkpoint and run validation
         # --------------------------------------------------------------
@@ -426,14 +430,16 @@ class BaseTrainer(ABC):
                 )
 
     def maybe_save_checkpoint(self, global_step: int, must_save: bool = False) -> str | None:
-        if not (must_save or global_step % self.uargs.checkpointing_steps == 0):
+        steps = self.uargs.checkpointing_steps
+        should_save = must_save or (steps and steps > 0 and global_step % steps == 0)
+        if not should_save:
             return None
 
         checkpointing_limit = self.uargs.checkpointing_limit
         output_dir = Path(self.uargs.output_dir)
         logger = self.logger
 
-        if checkpointing_limit is not None:
+        if checkpointing_limit:
             checkpoints = list_files(output_dir, prefix="checkpoint")
 
             def get_checkpoint_number(path):
