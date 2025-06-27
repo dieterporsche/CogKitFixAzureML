@@ -54,12 +54,12 @@ learning_rate: 2.0e-5
 num_workers: 8
 pin_memory: true
 
-checkpointing_steps: 10
-checkpointing_limit: 2
+checkpointing_steps: 0
+checkpointing_limit: 0
 resume_from_checkpoint: null  # or "/path/to/checkpoint/dir"
 
 
 # ================ Validation ================
 do_validation: true
-validation_steps: 10  # Must be a multiple of `checkpointing_steps`
+validation_steps: 0  # Must be a multiple of `checkpointing_steps`
 gen_fps: 16
