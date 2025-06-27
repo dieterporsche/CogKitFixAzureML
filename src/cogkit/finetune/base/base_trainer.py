@@ -351,6 +351,15 @@ class BaseTrainer(ABC):
                 f"Memory after epoch {epoch + 1}: {json.dumps(memory_statistics, indent=4)}"
             )
 
+
+            # --------------------------------------------------------------
+            # Hook for subclasses: run logic at the end of each epoch
+            # --------------------------------------------------------------
+            self.on_epoch_end(epoch, global_step)
+
+    def on_epoch_end(self, epoch: int, global_step: int) -> None:
+        """Hook called at the end of each training epoch."""
+        return None
             # --------------------------------------------------------------
             # At the end of every epoch save a checkpoint and run validation
             # --------------------------------------------------------------

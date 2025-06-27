@@ -21,6 +21,7 @@ from ..utils import (
     free_memory,
     get_memory_statistics,
     gather_object,
+    is_main_process,
     mkdir,
 )
 from .schemas import DiffusionArgs, DiffusionComponents, DiffusionState
@@ -344,6 +345,23 @@ class DiffusionTrainer(BaseTrainer):
         torch.cuda.reset_peak_memory_stats(self.state.device)
         torch.set_grad_enabled(True)
         self.components.transformer.train()
+
+    # ------------------------------------------------------------------
+    #                           EPOCH HOOK
+    # ------------------------------------------------------------------
+    @override
+    def on_epoch_end(self, epoch: int, global_step: int) -> None:
+        ckpt_path = self.maybe_save_checkpoint(global_step, must_save=True)
+        if ckpt_path is not None:
+            epoch_ckpt = self.uargs.output_dir / f"Checkpoint_Epoch_{epoch + 1}"
+            if is_main_process():
+                Path(ckpt_path).rename(epoch_ckpt)
+        else:
+            epoch_ckpt = None
+
+        if self.uargs.do_validation:
+            free_memory()
+            self.validate(epoch + 1, ckpt_path=epoch_ckpt)
 
     # ------------------------------------------------------------------
     #                       ABSTRACT / OVERRIDE METHODS

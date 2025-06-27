@@ -143,11 +143,8 @@ class BaseArgs(BaseModel):
     @field_validator("validation_steps")
     def validate_validation_steps(cls, v: int | None, info: ValidationInfo) -> int | None:
         values = info.data
-        if values.get("do_validation"):
-            if v is None:
-                raise ValueError("validation_steps must be specified when do_validation is True")
-            if values.get("checkpointing_steps") and v % values["checkpointing_steps"] != 0:
-                raise ValueError("validation_steps must be a multiple of checkpointing_steps")
+        if v is not None and values.get("checkpointing_steps") and v % values["checkpointing_steps"] != 0:
+            raise ValueError("validation_steps must be a multiple of checkpointing_steps")
         return v
 
     @field_validator("mixed_precision")
@@ -176,6 +173,26 @@ class BaseArgs(BaseModel):
         lr = yaml_dict.get("learning_rate")
         bs = yaml_dict.get("batch_size")
         if lr is not None and bs is not None:
+            cwd = Path.cwd().resolve()
+
+            # --------------------------------------------------------------
+            # Determine the repository root.  Prefer a parent directory named
+            # ``CogKitFix`` but fall back to the first directory containing a
+            # ``pyproject.toml`` file.  If neither is found, use the current
+            # working directory.
+            # --------------------------------------------------------------
+            repo_root: Path | None = None
+            for parent in [cwd, *cwd.parents]:
+                if parent.name == "CogKitFix":
+                    repo_root = parent
+                    break
+            if repo_root is None:
+                for parent in [cwd, *cwd.parents]:
+                    if (parent / "pyproject.toml").exists():
+                        repo_root = parent
+                        break
+            if repo_root is None:
+                repo_root = cwd
             # Find the repository root based on the current working directory.
             # ``pyproject.toml`` exists in the repo root, so walk parents until
             # it is found.  This works even when the package is installed in a
@@ -187,6 +204,7 @@ class BaseArgs(BaseModel):
                     repo_root = parent
                     break
 
+            
             yaml_dict["output_dir"] = repo_root / f"Output1__LR_{lr}__BS_{bs}"
 
         return cls(**yaml_dict)
