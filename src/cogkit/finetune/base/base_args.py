@@ -175,36 +175,27 @@ class BaseArgs(BaseModel):
         if lr is not None and bs is not None:
             cwd = Path.cwd().resolve()
 
+            # Find the repository root by searching upwards for
+            # ``pyproject.toml``.  If not found, fall back to the current
+            # directory.
             # --------------------------------------------------------------
-            # Determine the repository root.  Prefer a parent directory named
-            # ``CogKitFix`` but fall back to the first directory containing a
-            # ``pyproject.toml`` file.  If neither is found, use the current
-            # working directory.
-            # --------------------------------------------------------------
-            repo_root: Path | None = None
-            for parent in [cwd, *cwd.parents]:
-                if parent.name == "CogKitFix":
-                    repo_root = parent
-                    break
-            if repo_root is None:
-                for parent in [cwd, *cwd.parents]:
-                    if (parent / "pyproject.toml").exists():
-                        repo_root = parent
-                        break
-            if repo_root is None:
-                repo_root = cwd
-            # Find the repository root based on the current working directory.
-            # ``pyproject.toml`` exists in the repo root, so walk parents until
-            # it is found.  This works even when the package is installed in a
-            # Python environment.
-            cwd = Path.cwd().resolve()
-            repo_root = cwd
-            for parent in [cwd, *cwd.parents]:
-                if (parent / "pyproject.toml").exists():
-                    repo_root = parent
-                    break
+            repo_root = next(
+                (p for p in [cwd, *cwd.parents] if (p / "pyproject.toml").exists()),
+                cwd,
+            )
 
-            
-            yaml_dict["output_dir"] = repo_root / f"Output1__LR_{lr}__BS_{bs}"
+            # --------------------------------------------------------------
+            # Determine the next available output folder index by inspecting
+            # existing ``Output*`` directories in the repo root.
+            # --------------------------------------------------------------
+            indices = []
+            for d in repo_root.iterdir():
+                if d.is_dir() and d.name.startswith("Output"):
+                    num = d.name[6:].split("__", 1)[0]
+                    if num.isdigit():
+                        indices.append(int(num))
+            next_idx = max(indices, default=0) + 1
+
+            yaml_dict["output_dir"] = repo_root / f"Output{next_idx}__LR_{lr}__BS_{bs}"
 
         return cls(**yaml_dict)
