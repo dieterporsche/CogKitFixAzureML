@@ -56,6 +56,8 @@ job = command(
     code="/home/azureuser/cloudfiles/code/Users/dieter.holstein/runs/HuggingFace/CogKitFix",
     command="""
         export CODE_DIR=$(pwd)
+        export MODEL_PATH=${{inputs.pretrained_model}}
+        export DATA_ROOT=${{inputs.train_data}}
         export OUTPUT_DIR=$CODE_DIR/output
         mkdir -p "$OUTPUT_DIR"
 
@@ -76,9 +78,6 @@ job = command(
     experiment_name="dieter_CogVideo_Training",
     display_name="train_CogVideo_lora_job",
     environment_variables={
-        "MODEL_PATH": "${{inputs.pretrained_model}}",
-        "DATA_ROOT":  "${{inputs.train_data}}",
-        "OUTPUT_DIR": "/workspace_placeholder",  # wird gleich ersetzt
         "BNB_CUDA_VERSION": "124",
     },
 )
