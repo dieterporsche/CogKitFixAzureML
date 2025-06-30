@@ -1,12 +1,11 @@
 import subprocess
 import yaml
-#import re
 import logging
 import time
 from pathlib import Path
-#from typing import Dict, Tuple
 from typing import Dict
 import torch
+import os
 
 # We want the repository root so metrics and output paths resolve correctly.
 # __file__ = quickstart/scripts/i2v/hyperparam_search.py
@@ -45,6 +44,16 @@ def _count_training_data(data_root: Path) -> int:
 def _write_config(lr: float, batch_size: int, epochs: int) -> Path:
     with open(CONFIG_TEMPLATE, "r") as f:
         cfg = yaml.safe_load(f)
+    # ------------------------------------------------------------------
+    # Resolve paths from environment variables.  When running on Azure
+    # the ``MODEL_PATH``, ``DATA_ROOT`` and ``OUTPUT_DIR`` variables are
+    # provided via the job definition.  Without replacing them here the
+    # configuration would contain the literal strings ``$MODEL_PATH`` etc.
+    # which leads to failures when the trainer tries to load the model.
+    # ------------------------------------------------------------------
+    cfg["model_path"] = os.environ["MODEL_PATH"]
+    cfg["data_root"] = os.environ["DATA_ROOT"]
+    cfg["output_dir"] = os.environ["OUTPUT_DIR"]
     cfg["learning_rate"] = lr
     cfg["batch_size"] = batch_size
     cfg["train_epochs"] = epochs
